@@ -25,7 +25,11 @@ jobs:
         id: docker_meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          # ghcr requires lowercase image names, github.repository carries
+          # the canonical case (Rotten-Division/...) and ghcr 422s on uppercase.
+          # hardcode the lowercase form, the workflow stays fork rebase clean
+          # because upstream's value resolves to lowercase already.
+          images: ghcr.io/rotten-division/ospite-wings
           flavor: |
             latest=false
           tags: |
