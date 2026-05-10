@@ -7,6 +7,13 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
+# serialise per ref so two main pushes in quick succession cannot race the
+# canary release delete create cycle in the publish job.
+concurrency:
+  group: push-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
@@ -73,3 +80,62 @@ jobs:
         with:
           name: wings_linux_${{ matrix.goarch }}_debug
           path: dist/wings_debug
+
+  publish-canary:
+    name: Publish canary release
+    needs: build-and-test
+    if: github.repository == 'Rotten-Division/ospite-wings' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: stage canary release assets
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          mkdir -p out
+          cp dist/wings_linux_amd64/wings out/wings-canary-${SHORT_SHA}-linux-amd64
+          cp dist/wings_linux_arm64/wings out/wings-canary-${SHORT_SHA}-linux-arm64
+          chmod 0755 out/*
+          (cd out && sha256sum wings-canary-${SHORT_SHA}-linux-amd64 > wings-canary-${SHORT_SHA}-linux-amd64.sha256)
+          (cd out && sha256sum wings-canary-${SHORT_SHA}-linux-arm64 > wings-canary-${SHORT_SHA}-linux-arm64.sha256)
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+
+      - name: replace prior canary release at this sha if any
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "canary-${SHORT_SHA}" --yes --cleanup-tag 2>/dev/null || true
+
+      - name: create canary release at the per sha tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "canary-${SHORT_SHA}" \
+            out/wings-canary-${SHORT_SHA}-linux-amd64 \
+            out/wings-canary-${SHORT_SHA}-linux-amd64.sha256 \
+            out/wings-canary-${SHORT_SHA}-linux-arm64 \
+            out/wings-canary-${SHORT_SHA}-linux-arm64.sha256 \
+            --title "wings canary canary-${SHORT_SHA}" \
+            --notes "per push canary build from main at ${{ github.sha }}. older canary releases are reaped on the next publish, the most recent two stay so any in flight pull keeps a valid asset url for a moment after the new build lands." \
+            --prerelease \
+            --target "$GITHUB_SHA"
+
+      - name: reap older canary releases keeping the two most recent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 50 --json tagName,createdAt \
+            | jq -r '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[2:][] | .tagName' \
+            | while read -r OLD; do
+                echo "deleting $OLD"
+                gh release delete "$OLD" --yes --cleanup-tag || true
+              done
