@@ -41,7 +41,7 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 	// These routes use signed URLs to validate access to the resource being requested.
 	router.GET("/download/backup", getDownloadBackup)
 	router.GET("/download/file", getDownloadFile)
-	router.POST("/upload/file", postServerUploadFiles)
+	router.POST("/upload/file", middleware.BumpActivity(), postServerUploadFiles)
 
 	// This route is special it sits above all the other requests because we are
 	// using a JWT to authorize access to it, therefore it needs to be publicly
@@ -94,6 +94,7 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 		server.DELETE("deleteAllBackups", deleteAllServerBackups)
 
 		files := server.Group("/files")
+		files.Use(middleware.BumpActivity())
 		{
 			files.GET("/contents", getServerFileContents)
 			files.GET("/list-directory", getServerListDirectory)
