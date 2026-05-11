@@ -31,66 +31,58 @@ import (
 func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl, callbackAuth string) error {
 	startedAt := time.Now()
 
-	pr, pw := io.Pipe()
-	// hash and count the encoded bytes the producer writes, which equals the
-	// bytes s3 stores. transfer encoding framing is hop by hop and stripped
-	// before s3 commits the object, so the panel side hash recorded on
-	// capture and verified on restore round trip matches what is on the wire.
+	// encode to a temp file in the volume's parent directory before PUTing.
+	// minio rejects chunked PUTs (no Content-Length), so we cannot stream
+	// straight from io.Pipe to s3. landing in the volume parent keeps the
+	// temp file on the same dataset as the live volume, no cross-fs copy
+	// when the temp file is later removed.
+	parentDir := filepath.Dir(volumePath)
+	tempFile, err := os.CreateTemp(parentDir, ".nest-capture-*.tar.zst")
+	if err != nil {
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("create temp file: %v", err)))
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	defer tempFile.Close()
+
 	hasher := sha256.New()
 	counter := &countingWriter{}
-	multi := io.MultiWriter(pw, hasher, counter)
+	multi := io.MultiWriter(tempFile, hasher, counter)
 
-	encErr := make(chan error, 1)
-	go func() {
-		err := encodeVolume(volumePath, multi)
-		if err != nil {
-			// close the pipe with the error so the http transport aborts the
-			// in flight PUT mid body, s3 sees a broken connection and rejects
-			// the partial upload rather than committing a truncated archive
-			// under the panel known key.
-			_ = pw.CloseWithError(err)
-		} else {
-			_ = pw.Close()
-		}
-		encErr <- err
-	}()
+	if err := encodeVolume(volumePath, multi); err != nil {
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("encoder: %v", err)))
+	}
+	if err := tempFile.Sync(); err != nil {
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("sync temp file: %v", err)))
+	}
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("rewind temp file: %v", err)))
+	}
+
+	size := counter.n
+	sha := hex.EncodeToString(hasher.Sum(nil))
 
 	uploadCtx, cancel := context.WithTimeout(ctx, CaptureUploadTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, presignedUrl, pr)
+	req, err := http.NewRequestWithContext(uploadCtx, http.MethodPut, presignedUrl, tempFile)
 	if err != nil {
-		_ = pr.CloseWithError(err)
-		<-encErr
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("build PUT request: %v", err)))
 	}
+	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/zstd")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		_ = pr.CloseWithError(err)
-		<-encErr
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: %v", ErrPresignedUploadFailed, err)))
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	encodeErr := <-encErr
 
-	// when s3 rejects the PUT mid body, the http transport closes the
-	// request body, the encoder goroutine then hits EPIPE downstream of the
-	// real failure. report the s3 status first so the panel sees the actual
-	// cause instead of the encoder symptom.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: status %d body %s", ErrPresignedUploadFailed, resp.StatusCode, truncate(string(bodyBytes), 512))))
 	}
-
-	if encodeErr != nil {
-		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("encoder: %v", encodeErr)))
-	}
-
-	sha := hex.EncodeToString(hasher.Sum(nil))
-	size := counter.n
 
 	if err := os.RemoveAll(volumePath); err != nil {
 		// bytes are already on minio, treat as success but flag the orphan so

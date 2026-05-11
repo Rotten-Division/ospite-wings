@@ -32,10 +32,15 @@ func TestCapture_StreamsTarZstdToPresignedUrl(t *testing.T) {
 	}
 
 	var uploaded bytes.Buffer
+	var seenContentLength int64
 	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			t.Errorf("expected PUT, got %s", r.Method)
 		}
+		// minio rejects chunked PUTs, the production-side bug we fixed.
+		// assert ContentLength is set so a regression to the io.Pipe shape
+		// fails here instead of in prod.
+		seenContentLength = r.ContentLength
 		if _, err := io.Copy(&uploaded, r.Body); err != nil {
 			t.Errorf("body copy: %v", err)
 		}
@@ -105,6 +110,10 @@ func TestCapture_StreamsTarZstdToPresignedUrl(t *testing.T) {
 
 	if callbackPayload.Size != int64(uploaded.Len()) {
 		t.Errorf("size mismatch: got %d, expected %d", callbackPayload.Size, uploaded.Len())
+	}
+
+	if seenContentLength != int64(uploaded.Len()) {
+		t.Errorf("Content-Length header mismatch: got %d, expected %d", seenContentLength, uploaded.Len())
 	}
 }
 
