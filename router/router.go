@@ -67,6 +67,7 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 	protected.POST("/api/servers", postCreateServer)
 	protected.DELETE("/api/transfers/:server", deleteTransfer)
 	protected.POST("/api/deauthorize-user", postDeauthorizeUser)
+	protected.GET("/api/nest/candidates", getNestCandidates)
 
 	// These are server specific routes, and require that the request be authorized, and
 	// that the server exist on the Daemon.
@@ -125,6 +126,8 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 			nest.POST("/capture", postServerNestCapture)
 			nest.POST("/restore", postServerNestRestore)
 		}
+
+		server.GET("/activity", getServerActivity)
 	}
 
 	return router
