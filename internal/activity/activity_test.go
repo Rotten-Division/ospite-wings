@@ -58,11 +58,22 @@ func TestSftpSessionStartEnd_TracksCount(t *testing.T) {
 
 func TestSftpSessionEnd_FloorsAtZero(t *testing.T) {
 	tr := New()
+	tr.SftpSessionStart("xyz")
 	tr.SftpSessionEnd("xyz")
+	tr.SftpSessionEnd("xyz") // unbalanced, should floor
 
 	_, n := tr.Snapshot("xyz")
 	if n != 0 {
 		t.Errorf("expected count to floor at zero, got %d", n)
+	}
+}
+
+func TestSftpSessionEnd_DoesNotCreateRecordForUnknownServer(t *testing.T) {
+	tr := New()
+	tr.SftpSessionEnd("never-started")
+
+	if _, ok := tr.records["never-started"]; ok {
+		t.Errorf("orphan SftpSessionEnd created a tracking record")
 	}
 }
 

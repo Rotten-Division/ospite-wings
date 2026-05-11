@@ -1,3 +1,16 @@
+// Package activity tracks per-server io activity for the nest eviction
+// sweep. distinct from server/activity.go which records audit log events,
+// this package is purely about "has this server seen any io recently".
+//
+// signal sources hooked into the tracker:
+//   - http file api requests via router/middleware/BumpActivity
+//   - sftp session start and end via sftp/server.go Handle
+//
+// the panel reads the tracker via two endpoints in router/router_activity.go,
+// the eviction sweep uses the result to decide which stopped servers are
+// eligible for nest capture. the design point is that wings is the only
+// honest source of activity truth, panel side traffic does not reach this
+// tracker so a user cannot fake activity by spamming the panel api.
 package activity
 
 import (
@@ -6,10 +19,7 @@ import (
 )
 
 // Tracker keeps a per server in-memory record of the last io request and the
-// active sftp session count. the panel side eviction sweep queries this to
-// decide which stopped servers are eligible for nest capture, the panel
-// trusts wings as the single source of activity truth so a user cannot fake
-// activity by spamming the panel api.
+// active sftp session count.
 type Tracker struct {
 	mu        sync.RWMutex
 	records   map[string]*record
@@ -55,14 +65,19 @@ func (t *Tracker) SftpSessionStart(serverUUID string) {
 }
 
 // SftpSessionEnd decrements the active session count. floors at zero so an
-// unbalanced call cannot make the count go negative.
+// unbalanced call cannot make the count go negative. no-op when no record
+// exists for the server, an orphan end before any start should not create
+// a tracking record.
 func (t *Tracker) SftpSessionEnd(serverUUID string) {
 	if serverUUID == "" {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	r := t.recordFor(serverUUID)
+	r, ok := t.records[serverUUID]
+	if !ok {
+		return
+	}
 	if r.ActiveSftpSessions > 0 {
 		r.ActiveSftpSessions--
 	}
