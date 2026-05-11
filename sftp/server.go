@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/pelican-dev/wings/config"
+	"github.com/pelican-dev/wings/internal/activity"
 	"github.com/pelican-dev/wings/remote"
 	"github.com/pelican-dev/wings/server"
 )
@@ -163,6 +164,9 @@ func (c *SFTPServer) Handle(conn *ssh.ServerConn, srv *server.Server, channel ss
 	if err != nil {
 		return errors.WithStackIf(err)
 	}
+
+	activity.Global().SftpSessionStart(srv.Id())
+	defer activity.Global().SftpSessionEnd(srv.Id())
 
 	ctx := srv.Sftp().Context(handler.User())
 	rs := sftp.NewRequestServer(channel, handler.Handlers())
