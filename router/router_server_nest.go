@@ -8,10 +8,18 @@ import (
 	"github.com/apex/log"
 	"github.com/gin-gonic/gin"
 
+	"github.com/pelican-dev/wings/config"
 	"github.com/pelican-dev/wings/environment"
 	"github.com/pelican-dev/wings/router/middleware"
 	"github.com/pelican-dev/wings/server/nest"
 )
+
+// callbackAuth packs the wings token id and secret into the {id}.{secret}
+// pair the panel's DaemonAuthenticate middleware expects as a Bearer token.
+func callbackAuth() string {
+	t := config.Get().Token
+	return t.ID + "." + t.Token
+}
 
 // postServerNestCapture handles POST /api/servers/{uuid}/nest/capture. answers
 // 202 immediately and runs the streaming capture in a goroutine, the panel
@@ -42,7 +50,7 @@ func postServerNestCapture(c *gin.Context) {
 	logger := middleware.ExtractLogger(c)
 
 	go func(logger *log.Entry) {
-		if err := nest.Capture(context.Background(), volumePath, req.PresignedUrl, req.CallbackUrl); err != nil {
+		if err := nest.Capture(context.Background(), volumePath, req.PresignedUrl, req.CallbackUrl, callbackAuth()); err != nil {
 			logger.WithField("error", errors.WithStackIf(err)).Error("router: nest capture callback delivery failed")
 		}
 	}(logger)
@@ -78,7 +86,7 @@ func postServerNestRestore(c *gin.Context) {
 	logger := middleware.ExtractLogger(c)
 
 	go func(logger *log.Entry) {
-		if err := nest.Restore(context.Background(), volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl); err != nil {
+		if err := nest.Restore(context.Background(), volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl, callbackAuth()); err != nil {
 			logger.WithField("error", errors.WithStackIf(err)).Error("router: nest restore callback delivery failed")
 		}
 	}(logger)

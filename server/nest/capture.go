@@ -28,7 +28,7 @@ import (
 // returns nil on success or the http error from the callback POST. payload
 // errors are encoded into the callback rather than returned, the caller
 // already has nothing useful to do with them.
-func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl string) error {
+func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl, callbackAuth string) error {
 	startedAt := time.Now()
 
 	pr, pw := io.Pipe()
@@ -62,7 +62,7 @@ func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl string) 
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		<-encErr
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("build PUT request: %v", err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("build PUT request: %v", err)))
 	}
 	req.Header.Set("Content-Type", "application/zstd")
 
@@ -70,18 +70,18 @@ func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl string) 
 	if err != nil {
 		_ = pr.CloseWithError(err)
 		<-encErr
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("%v: %v", ErrPresignedUploadFailed, err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: %v", ErrPresignedUploadFailed, err)))
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if encodeErr := <-encErr; encodeErr != nil {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("encoder: %v", encodeErr)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("encoder: %v", encodeErr)))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("%v: status %d body %s", ErrPresignedUploadFailed, resp.StatusCode, truncate(string(bodyBytes), 512))))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: status %d body %s", ErrPresignedUploadFailed, resp.StatusCode, truncate(string(bodyBytes), 512))))
 	}
 
 	sha := hex.EncodeToString(hasher.Sum(nil))
@@ -90,7 +90,7 @@ func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl string) 
 	if err := os.RemoveAll(volumePath); err != nil {
 		// bytes are already on minio, treat as success but flag the orphan so
 		// the panel sweep can retry the volume delete.
-		return postCallback(callbackUrl, CallbackPayload{
+		return postCallback(callbackUrl, callbackAuth, CallbackPayload{
 			Success:      true,
 			ErrorMessage: fmt.Sprintf("upload succeeded but volume delete failed: %v", err),
 			Size:         size,
@@ -100,7 +100,7 @@ func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl string) 
 		})
 	}
 
-	return postCallback(callbackUrl, CallbackPayload{
+	return postCallback(callbackUrl, callbackAuth, CallbackPayload{
 		Success:    true,
 		Size:       size,
 		Sha256:     sha,
@@ -174,7 +174,11 @@ func encodeVolume(volumePath string, w io.Writer) error {
 
 // postCallback POSTs payload to callbackUrl. callback delivery is best
 // effort, the returned error only describes the http leg.
-func postCallback(callbackUrl string, payload CallbackPayload) error {
+// callbackAuth is the {token_id}.{token} pair the panel's DaemonAuthenticate
+// middleware expects as a Bearer credential. wings has no other reason to
+// call back into the panel so we don't share an http client or auth helper
+// with the regular daemon→panel flows that already carry it.
+func postCallback(callbackUrl, callbackAuth string, payload CallbackPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return errors.Wrap(err, "nest: marshal callback")
@@ -188,6 +192,9 @@ func postCallback(callbackUrl string, payload CallbackPayload) error {
 		return errors.Wrap(err, "nest: build callback request")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if callbackAuth != "" {
+		req.Header.Set("Authorization", "Bearer "+callbackAuth)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

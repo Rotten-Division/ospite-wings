@@ -24,22 +24,22 @@ import (
 //
 // returns nil on success or the http error from the callback POST. payload
 // errors are encoded into the callback.
-func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, callbackUrl string) error {
+func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, callbackUrl, callbackAuth string) error {
 	startedAt := time.Now()
 
 	entries, err := os.ReadDir(volumePath)
 	if err == nil && len(entries) > 0 {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("%v: %s", ErrVolumeAlreadyExists, volumePath)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: %s", ErrVolumeAlreadyExists, volumePath)))
 	}
 	if err != nil && !os.IsNotExist(err) {
 		// permission denied, EIO, or anything else short of not exist means
 		// we cannot prove the destination is empty. refuse rather than write
 		// over whatever might be there.
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("stat volume dir %s: %v", volumePath, err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("stat volume dir %s: %v", volumePath, err)))
 	}
 
 	if err := os.MkdirAll(volumePath, 0o755); err != nil {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("create volume dir: %v", err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("create volume dir: %v", err)))
 	}
 
 	dlCtx, cancel := context.WithTimeout(ctx, RestoreDownloadTimeout)
@@ -47,17 +47,17 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 
 	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, presignedUrl, nil)
 	if err != nil {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("build GET request: %v", err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("build GET request: %v", err)))
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("%v: %v", ErrPresignedDownloadFailed, err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: %v", ErrPresignedDownloadFailed, err)))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("%v: status %d", ErrPresignedDownloadFailed, resp.StatusCode)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: status %d", ErrPresignedDownloadFailed, resp.StatusCode)))
 	}
 
 	hasher := sha256.New()
@@ -65,7 +65,7 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 
 	zr, err := zstd.NewReader(teeReader)
 	if err != nil {
-		return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("zstd reader: %v", err)))
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("zstd reader: %v", err)))
 	}
 	defer zr.Close()
 
@@ -76,7 +76,7 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 			break
 		}
 		if err != nil {
-			return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("tar next: %v", err)))
+			return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("tar next: %v", err)))
 		}
 
 		target := filepath.Join(volumePath, hdr.Name)
@@ -87,25 +87,25 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 		absTarget, _ := filepath.Abs(target)
 		rel, err := filepath.Rel(absVolume, absTarget)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("tar entry escapes volume: %s", hdr.Name)))
+			return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("tar entry escapes volume: %s", hdr.Name)))
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)&0o777); err != nil {
-				return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("mkdir %s: %v", target, err)))
+				return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("mkdir %s: %v", target, err)))
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("mkdir parent of %s: %v", target, err)))
+				return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("mkdir parent of %s: %v", target, err)))
 			}
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
 			if err != nil {
-				return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("open %s: %v", target, err)))
+				return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("open %s: %v", target, err)))
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				_ = f.Close()
-				return postCallback(callbackUrl, failurePayload(startedAt, fmt.Sprintf("write %s: %v", target, err)))
+				return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("write %s: %v", target, err)))
 			}
 			_ = f.Close()
 		default:
@@ -120,7 +120,7 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 
 	gotSha := hex.EncodeToString(hasher.Sum(nil))
 	if gotSha != expectedSha256 {
-		return postCallback(callbackUrl, CallbackPayload{
+		return postCallback(callbackUrl, callbackAuth, CallbackPayload{
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("%v: got %s expected %s", ErrShaMismatch, gotSha, expectedSha256),
 			Sha256:       gotSha,
@@ -129,7 +129,7 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 		})
 	}
 
-	return postCallback(callbackUrl, CallbackPayload{
+	return postCallback(callbackUrl, callbackAuth, CallbackPayload{
 		Success:    true,
 		Sha256:     gotSha,
 		StartedAt:  startedAt,

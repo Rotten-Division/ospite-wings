@@ -45,7 +45,7 @@ func TestRestore_StreamsArchiveIntoVolume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := Restore(ctx, volumePath, s3Server.URL, expectedShaHex, callbackServer.URL); err != nil {
+	if err := Restore(ctx, volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, ""); err != nil {
 		t.Fatalf("Restore returned error: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestRestore_FailsOnShaMismatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = Restore(ctx, volumePath, s3Server.URL, wrongSha, callbackServer.URL)
+	_ = Restore(ctx, volumePath, s3Server.URL, wrongSha, callbackServer.URL, "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false on sha mismatch")
@@ -116,7 +116,7 @@ func TestRestore_RefusesNonEmptyDestination(t *testing.T) {
 	defer callbackServer.Close()
 
 	// presigned url is never reached, the destination check fails first
-	_ = Restore(context.Background(), volumePath, "http://unused", "00", callbackServer.URL)
+	_ = Restore(context.Background(), volumePath, "http://unused", "00", callbackServer.URL, "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false when destination is non empty")
@@ -154,7 +154,7 @@ func TestRestore_RefusesZipSlipEntry(t *testing.T) {
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
-	_ = Restore(context.Background(), volumePath, s3Server.URL, expectedShaHex, callbackServer.URL)
+	_ = Restore(context.Background(), volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false on zip slip attempt")

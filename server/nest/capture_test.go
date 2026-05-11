@@ -55,7 +55,7 @@ func TestCapture_StreamsTarZstdToPresignedUrl(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := Capture(ctx, volumePath, s3Server.URL, callbackServer.URL); err != nil {
+	if err := Capture(ctx, volumePath, s3Server.URL, callbackServer.URL, ""); err != nil {
 		t.Fatalf("Capture returned error: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestCapture_FailsCallbackOnS3Reject(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = Capture(ctx, volumePath, s3Server.URL, callbackServer.URL)
+	_ = Capture(ctx, volumePath, s3Server.URL, callbackServer.URL, "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false on s3 403")
