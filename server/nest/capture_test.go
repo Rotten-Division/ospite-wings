@@ -150,6 +150,76 @@ func TestCapture_FailsCallbackOnS3Reject(t *testing.T) {
 	}
 }
 
+func TestCapture_SendsBearerAuthOnCallback(t *testing.T) {
+	tempDir := t.TempDir()
+	volumePath := filepath.Join(tempDir, "volume")
+	if err := os.MkdirAll(volumePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(volumePath, "a.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer s3Server.Close()
+
+	var seenAuth string
+	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callbackServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := Capture(ctx, volumePath, s3Server.URL, callbackServer.URL, "node-id-1.secret-token"); err != nil {
+		t.Fatalf("Capture returned error: %v", err)
+	}
+
+	if seenAuth != "Bearer node-id-1.secret-token" {
+		t.Errorf("expected Bearer header on callback, got %q", seenAuth)
+	}
+}
+
+func TestCapture_SkipsAuthHeaderWhenEmpty(t *testing.T) {
+	tempDir := t.TempDir()
+	volumePath := filepath.Join(tempDir, "volume")
+	if err := os.MkdirAll(volumePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(volumePath, "a.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer s3Server.Close()
+
+	var seenAuth string
+	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer callbackServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := Capture(ctx, volumePath, s3Server.URL, callbackServer.URL, ""); err != nil {
+		t.Fatalf("Capture returned error: %v", err)
+	}
+
+	if seenAuth != "" {
+		t.Errorf("expected no Authorization header when callbackAuth is empty, got %q", seenAuth)
+	}
+}
+
 func decodeJsonBody(r *http.Request, v any) error {
 	defer r.Body.Close()
 	body, err := io.ReadAll(r.Body)
