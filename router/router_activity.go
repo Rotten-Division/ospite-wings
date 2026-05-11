@@ -23,6 +23,8 @@ func getServerActivity(c *gin.Context) {
 
 	last, sftp := activity.Global().Snapshot(s.Id())
 
+	// last_io_at is unix seconds, panel parses via Carbon::createFromTimestamp.
+	// container_state is one of the environment.Process*State strings.
 	c.JSON(http.StatusOK, gin.H{
 		"last_io_at":           last.Unix(),
 		"active_sftp_sessions": sftp,
@@ -35,14 +37,18 @@ func getServerActivity(c *gin.Context) {
 // for at least idle_minutes, zero active sftp sessions. used by the panel
 // sweep for candidate discovery.
 //
-// idle_minutes defaults to 15 and is capped at 1440 (24h) to bound the
-// eligibility window an attacker could request.
+// idle_minutes defaults to 15. clamped to [5, 1440] to bound both how
+// aggressive a buggy panel can request the threshold and how far in the past
+// a hostile request could rewrite eligibility.
 func getNestCandidates(c *gin.Context) {
 	idleMinutes := 15
 	if raw := c.Query("idle_minutes"); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 			idleMinutes = parsed
 		}
+	}
+	if idleMinutes < 5 {
+		idleMinutes = 5
 	}
 	if idleMinutes > 1440 {
 		idleMinutes = 1440
