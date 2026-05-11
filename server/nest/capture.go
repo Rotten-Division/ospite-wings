@@ -75,13 +75,18 @@ func Capture(ctx context.Context, volumePath, presignedUrl, callbackUrl, callbac
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
+	encodeErr := <-encErr
 
-	if encodeErr := <-encErr; encodeErr != nil {
-		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("encoder: %v", encodeErr)))
-	}
-
+	// when s3 rejects the PUT mid body, the http transport closes the
+	// request body, the encoder goroutine then hits EPIPE downstream of the
+	// real failure. report the s3 status first so the panel sees the actual
+	// cause instead of the encoder symptom.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: status %d body %s", ErrPresignedUploadFailed, resp.StatusCode, truncate(string(bodyBytes), 512))))
+	}
+
+	if encodeErr != nil {
+		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("encoder: %v", encodeErr)))
 	}
 
 	sha := hex.EncodeToString(hasher.Sum(nil))
