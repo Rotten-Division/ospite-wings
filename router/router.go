@@ -69,6 +69,13 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 	protected.POST("/api/deauthorize-user", postDeauthorizeUser)
 	protected.GET("/api/nest/candidates", getNestCandidates)
 
+	// nest restore lands a server that was previously evicted off this node.
+	// the source node would have unregistered the server when its node_id
+	// went to null, so wings may not have it in the manager when the panel
+	// fires this. registered outside the ServerExists middleware so the
+	// handler can fetch the server config from panel and register on demand.
+	protected.POST("/api/servers/:server/nest/restore", postServerNestRestore)
+
 	// These are server specific routes, and require that the request be authorized, and
 	// that the server exist on the Daemon.
 	server := router.Group("/api/servers/:server")
@@ -124,7 +131,9 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 		nest := server.Group("/nest")
 		{
 			nest.POST("/capture", postServerNestCapture)
-			nest.POST("/restore", postServerNestRestore)
+			// /nest/restore is registered above the ServerExists middleware
+			// so the handler can fetch + register unknown servers, see
+			// router_server_nest.go::postServerNestRestore.
 		}
 
 		server.GET("/activity", getServerActivity)
