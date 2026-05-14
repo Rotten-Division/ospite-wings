@@ -123,6 +123,19 @@ func (c *client) SetTransferStatus(ctx context.Context, uuid string, successful 
 	return nil
 }
 
+func (c *client) PostTransferProgress(ctx context.Context, uuid string, step string, bytes, totalBytes int64) error {
+	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/transfer-progress", uuid), d{
+		"step":        step,
+		"bytes":       bytes,
+		"total_bytes": totalBytes,
+	})
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // ValidateSftpCredentials makes a request to determine if the username and
 // password combination provided is associated with a valid server on the instance
 // using the Panel's authentication control mechanisms. This will get itself

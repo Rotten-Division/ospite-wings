@@ -156,17 +156,36 @@ func newProgressPayload(step Step, bytes, totalBytes int64) ProgressPayload {
 	}
 }
 
+// panelProgressTimeout caps the panel POST so a slow or unreachable
+// panel never gates the transfer pipeline. The websocket publish
+// happens regardless.
+const panelProgressTimeout = 5 * time.Second
+
 // PublishProgress emits a structured transfer progress event. callers in
 // the source upload goroutine and the destination extract / verify /
 // cleanup paths use this to surface phase + byte progress so the panel
 // can render the overview page's progress bar without parsing log
 // strings.
+//
+// The websocket publish is synchronous and cheap. The panel POST runs
+// in a goroutine with a bounded timeout so a slow panel does not stall
+// the transfer pump. POST failures log a warning and are otherwise
+// non-fatal — the transfer continues either way.
 func (t *Transfer) PublishProgress(step Step, bytes, totalBytes int64) {
 	if t.Server == nil {
 		return
 	}
 
 	t.Server.Events().Publish(server.TransferProgressEvent, newProgressPayload(step, bytes, totalBytes))
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), panelProgressTimeout)
+		defer cancel()
+
+		if err := t.Server.SendTransferProgress(ctx, string(step), bytes, totalBytes); err != nil {
+			t.Log().WithError(err).Warn("failed to post transfer progress to panel")
+		}
+	}()
 }
 
 // progressEmitter throttles PublishProgress calls so a tight write loop

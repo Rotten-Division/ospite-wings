@@ -439,6 +439,14 @@ func (s *Server) OnStateChange() {
 	}
 }
 
+// SendTransferProgress posts a structured transfer progress payload to
+// the panel. Used by the transfer pipeline so the panel can cache the
+// step + bytes state for the overview page without requiring a
+// websocket client to be open.
+func (s *Server) SendTransferProgress(ctx context.Context, step string, bytes, totalBytes int64) error {
+	return s.client.PostTransferProgress(ctx, s.ID(), step, bytes, totalBytes)
+}
+
 // IsRunning determines if the server state is running or not. This is different
 // from the environment state, it is simply the tracked state from this daemon
 // instance, and not the response from Docker.
