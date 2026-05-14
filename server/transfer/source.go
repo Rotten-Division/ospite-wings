@@ -29,28 +29,34 @@ func (t *Transfer) PushArchiveToTarget(url, token string, backups []string) ([]b
 
 	t.SendMessage("Streaming archive to destination...")
 
-	// Send the upload progress to the websocket every 5 seconds.
+	// Source-side progress emission. Ticker drives both the legacy log
+	// string (kept for the in-page console) and the structured progress
+	// event the panel cache consumes for the overview page.
 	ctx2, cancel2 := context.WithCancel(ctx)
 	defer cancel2()
-	go func(ctx context.Context, a *Archive, tc *time.Ticker) {
-		defer tc.Stop()
+	go func(ctx context.Context, a *Archive, logTicker *time.Ticker, eventTicker *time.Ticker) {
+		defer logTicker.Stop()
+		defer eventTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-tc.C:
+			case <-logTicker.C:
 				progress := a.Progress()
 				if progress != nil {
 					message := "Uploading " + progress.Progress(25)
-					// We can't easily show backup count here without tracking totalBackups
-					// But we're already showing individual backup progress in StreamBackups
 					t.SendMessage(message)
 					t.Log().Info(message)
 				}
+			case <-eventTicker.C:
+				progress := a.Progress()
+				if progress != nil {
+					t.PublishProgress(StepUploading, int64(progress.Written()), int64(progress.Total()))
+				}
 			}
 		}
-	}(ctx2, a, time.NewTicker(5*time.Second))
+	}(ctx2, a, time.NewTicker(5*time.Second), time.NewTicker(500*time.Millisecond))
 
 	// Create a new request using the pipe as the body.
 	body, writer := io.Pipe()

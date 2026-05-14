@@ -18,6 +18,7 @@ const (
 	BackupCompletedEvent        = "backup completed"
 	TransferLogsEvent           = "transfer logs"
 	TransferStatusEvent         = "transfer status"
+	TransferProgressEvent       = "transfer progress"
 	DeletedEvent                = "deleted"
 	FeatureMatchEvent           = "feature match"
 )

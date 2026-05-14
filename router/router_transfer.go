@@ -181,6 +181,12 @@ out:
 					return
 				}
 
+				// Mark the destination-side phase transition. Bytes are
+				// unknown here because ExtractStreamUnsafe does not surface
+				// a counter, so the panel renders the extracting step as
+				// indeterminate.
+				trnsfr.PublishProgress(transfer.StepExtracting, 0, 0)
+
 				// Calculate checksum while streaming to extraction
 				archiveHasher := sha256.New()
 				tee := io.TeeReader(p, archiveHasher)
@@ -299,6 +305,8 @@ out:
 		}
 	}
 
+	trnsfr.PublishProgress(transfer.StepVerifying, 0, 0)
+
 	// Verify main archive checksum
 	if hasArchive {
 		if archiveChecksumReceived == "" {
@@ -344,6 +352,8 @@ out:
 		middleware.CaptureAndAbort(c, errors.New("missing archive"))
 		return
 	}
+
+	trnsfr.PublishProgress(transfer.StepCleanup, 0, 0)
 
 	// Transfer is almost complete, we just want to ensure the environment is
 	// configured correctly. We might want to not fail the transfer at this
