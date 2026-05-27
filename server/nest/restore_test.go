@@ -6,14 +6,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRestore_StreamsArchiveIntoVolume(t *testing.T) {
@@ -45,7 +49,7 @@ func TestRestore_StreamsArchiveIntoVolume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := Restore(ctx, volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, ""); err != nil {
+	if err := Restore(ctx, volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "", ""); err != nil {
 		t.Fatalf("Restore returned error: %v", err)
 	}
 
@@ -88,7 +92,7 @@ func TestRestore_FailsOnShaMismatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = Restore(ctx, volumePath, s3Server.URL, wrongSha, callbackServer.URL, "")
+	_ = Restore(ctx, volumePath, s3Server.URL, wrongSha, callbackServer.URL, "", "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false on sha mismatch")
@@ -116,7 +120,7 @@ func TestRestore_RefusesNonEmptyDestination(t *testing.T) {
 	defer callbackServer.Close()
 
 	// presigned url is never reached, the destination check fails first
-	_ = Restore(context.Background(), volumePath, "http://unused", "00", callbackServer.URL, "")
+	_ = Restore(context.Background(), volumePath, "http://unused", "00", callbackServer.URL, "", "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false when destination is non empty")
@@ -154,7 +158,7 @@ func TestRestore_RefusesZipSlipEntry(t *testing.T) {
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
-	_ = Restore(context.Background(), volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "")
+	_ = Restore(context.Background(), volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "", "")
 
 	if callbackPayload.Success {
 		t.Errorf("expected success=false on zip slip attempt")
@@ -162,6 +166,63 @@ func TestRestore_RefusesZipSlipEntry(t *testing.T) {
 	if !bytes.Contains([]byte(callbackPayload.ErrorMessage), []byte("escapes volume")) {
 		t.Errorf("expected escapes volume error, got: %s", callbackPayload.ErrorMessage)
 	}
+}
+
+func TestRestore_EmitsDownloadingProgress(t *testing.T) {
+	// build a fixture large enough to guarantee at least one 500ms throttle
+	// window elapses during the read loop. 64 KiB of repeated bytes is tiny
+	// on disk but the httptest server delivers it synchronously so Read calls
+	// will fire at least twice, giving the goroutine time to emit.
+	content := bytes.Repeat([]byte("x"), 64*1024)
+	files := map[string][]byte{
+		"bigfile.bin": content,
+	}
+	archive := buildArchive(t, files)
+	expectedSha := sha256.Sum256(archive.Bytes())
+	expectedShaHex := hex.EncodeToString(expectedSha[:])
+
+	presigned := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zstd")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", archive.Len()))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(archive.Bytes())
+	}))
+	defer presigned.Close()
+
+	var got []ProgressPayload
+	var mu sync.Mutex
+	progress := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p ProgressPayload
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		mu.Lock()
+		got = append(got, p)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer progress.Close()
+
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+
+	tempDir := t.TempDir()
+	volumePath := filepath.Join(tempDir, "newvolume")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := Restore(ctx, volumePath, presigned.URL, expectedShaHex, callback.URL, progress.URL, "")
+	require.NoError(t, err)
+
+	// progress posts fire in goroutines; give them a beat to land.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, got, "expected at least one progress payload")
+	require.Equal(t, "downloading", got[0].Step)
+	require.Greater(t, got[len(got)-1].Bytes, int64(0))
 }
 
 // buildArchive builds an in-memory tar.zst from name → content map for tests.

@@ -22,9 +22,13 @@ import (
 // → tar.Reader → volume files, with the hasher teeing the http body so the
 // integrity check covers what came off s3, matching what capture wrote.
 //
+// progressUrl is optional; when non-empty wings POSTs best-effort downloading
+// progress ticks to it during the download leg. errors are swallowed and never
+// affect the restore outcome.
+//
 // returns nil on success or the http error from the callback POST. payload
 // errors are encoded into the callback.
-func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, callbackUrl, callbackAuth string) error {
+func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, callbackUrl, progressUrl, callbackAuth string) error {
 	startedAt := time.Now()
 
 	entries, err := os.ReadDir(volumePath)
@@ -60,8 +64,22 @@ func Restore(ctx context.Context, volumePath, presignedUrl, expectedSha256, call
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("%v: status %d", ErrPresignedDownloadFailed, resp.StatusCode)))
 	}
 
+	total := resp.ContentLength
+	if total < 0 {
+		total = 0
+	}
+
+	pr := &progressReader{
+		r:        resp.Body,
+		total:    total,
+		url:      progressUrl,
+		auth:     callbackAuth,
+		step:     "downloading",
+		throttle: 500 * time.Millisecond,
+	}
+
 	hasher := sha256.New()
-	teeReader := io.TeeReader(resp.Body, hasher)
+	teeReader := io.TeeReader(pr, hasher)
 
 	zr, err := zstd.NewReader(teeReader)
 	if err != nil {

@@ -122,7 +122,7 @@ func postServerNestRestore(c *gin.Context) {
 	volumePath := s.Filesystem().Path()
 
 	go func(logger *log.Entry) {
-		if err := nest.Restore(context.Background(), volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl, callbackAuth()); err != nil {
+		if err := nest.Restore(context.Background(), volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl, req.ProgressUrl, callbackAuth()); err != nil {
 			logger.WithField("error", errors.WithStackIf(err)).Error("router: nest restore callback delivery failed")
 		}
 	}(logger)
