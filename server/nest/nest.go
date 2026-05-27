@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -131,23 +132,35 @@ func postProgress(progressUrl, auth string, payload ProgressPayload) {
 // downloading-progress POST. wrapped around the s3 response body so the
 // count reflects compressed bytes off the wire (matches the archive_size
 // the panel recorded at capture).
+// the zstd streaming decoder pulls from this reader on its own goroutine
+// while the post-tar tail drain pulls from it on the main goroutine, so the
+// byte counter and throttle clock are guarded by mu.
 type progressReader struct {
 	r        io.Reader
 	total    int64
-	read     int64
 	url      string
 	auth     string
 	step     string
 	throttle time.Duration
+	mu       sync.Mutex
+	read     int64
 	lastEmit time.Time
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
+
+	p.mu.Lock()
 	p.read += int64(n)
-	if p.url != "" && time.Since(p.lastEmit) >= p.throttle {
+	read := p.read
+	emit := p.url != "" && time.Since(p.lastEmit) >= p.throttle
+	if emit {
 		p.lastEmit = time.Now()
-		go postProgress(p.url, p.auth, ProgressPayload{Step: p.step, Bytes: p.read, TotalBytes: p.total})
+	}
+	p.mu.Unlock()
+
+	if emit {
+		go postProgress(p.url, p.auth, ProgressPayload{Step: p.step, Bytes: read, TotalBytes: p.total})
 	}
 	return n, err
 }
