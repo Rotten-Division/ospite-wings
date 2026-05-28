@@ -606,6 +606,11 @@ func postServerUploadFiles(c *gin.Context) {
 		return
 	}
 
+	// this route resolves the server from the upload token rather than a
+	// server-injecting middleware, so set it on the context for the
+	// post-handler BumpActivity middleware to record the io against.
+	c.Set("server", s)
+
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{

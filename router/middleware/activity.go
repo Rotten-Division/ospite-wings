@@ -4,6 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/pelican-dev/wings/internal/activity"
+	"github.com/pelican-dev/wings/server"
 )
 
 // BumpActivity records an io event against the resolved server. mounted on
@@ -25,11 +26,13 @@ func BumpActivity() gin.HandlerFunc {
 			return
 		}
 
-		s := ExtractServer(c)
-		if s == nil {
+		// soft lookup rather than ExtractServer: the signed upload route has no
+		// server-injecting middleware, so an absent server is a skip, not a panic.
+		v, ok := c.Get("server")
+		if !ok {
 			return
 		}
 
-		activity.Global().RecordIO(s.Id())
+		activity.Global().RecordIO(v.(*server.Server).Id())
 	}
 }
