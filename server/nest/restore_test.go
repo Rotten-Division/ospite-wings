@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,25 +38,18 @@ func TestRestore_StreamsArchiveIntoVolume(t *testing.T) {
 	}))
 	defer s3Server.Close()
 
-	var callbackPayload CallbackPayload
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = decodeJsonBody(r, &callbackPayload)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer callbackServer.Close()
-
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := Restore(ctx, volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "", ""); err != nil {
-		t.Fatalf("Restore returned error: %v", err)
+	sha, err := streamRestore(ctx, volumePath, s3Server.URL, expectedShaHex, "", "")
+	if err != nil {
+		t.Fatalf("streamRestore returned error: %v", err)
 	}
-
-	if !callbackPayload.Success {
-		t.Fatalf("expected success=true, got error: %s", callbackPayload.ErrorMessage)
+	if sha != expectedShaHex {
+		t.Fatalf("expected sha %s, got %s", expectedShaHex, sha)
 	}
 
 	for name, expected := range files {
@@ -78,13 +73,6 @@ func TestRestore_FailsOnShaMismatch(t *testing.T) {
 	}))
 	defer s3Server.Close()
 
-	var callbackPayload CallbackPayload
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = decodeJsonBody(r, &callbackPayload)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer callbackServer.Close()
-
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
@@ -92,13 +80,13 @@ func TestRestore_FailsOnShaMismatch(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = Restore(ctx, volumePath, s3Server.URL, wrongSha, callbackServer.URL, "", "")
 
-	if callbackPayload.Success {
-		t.Errorf("expected success=false on sha mismatch")
+	_, err := streamRestore(ctx, volumePath, s3Server.URL, wrongSha, "", "")
+	if err == nil {
+		t.Errorf("expected error on sha mismatch, got nil")
 	}
-	if !bytes.Contains([]byte(callbackPayload.ErrorMessage), []byte("sha256 mismatch")) {
-		t.Errorf("expected sha mismatch error, got: %s", callbackPayload.ErrorMessage)
+	if !errors.Is(err, ErrShaMismatch) {
+		t.Errorf("expected ErrShaMismatch in error chain, got: %v", err)
 	}
 }
 
@@ -112,21 +100,13 @@ func TestRestore_RefusesNonEmptyDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var callbackPayload CallbackPayload
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = decodeJsonBody(r, &callbackPayload)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer callbackServer.Close()
-
 	// presigned url is never reached, the destination check fails first
-	_ = Restore(context.Background(), volumePath, "http://unused", "00", callbackServer.URL, "", "")
-
-	if callbackPayload.Success {
-		t.Errorf("expected success=false when destination is non empty")
+	_, err := streamRestore(context.Background(), volumePath, "http://unused", "00", "", "")
+	if err == nil {
+		t.Errorf("expected error when destination is non empty")
 	}
-	if !bytes.Contains([]byte(callbackPayload.ErrorMessage), []byte("already exists")) {
-		t.Errorf("expected already exists error, got: %s", callbackPayload.ErrorMessage)
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected already exists error, got: %s", err.Error())
 	}
 }
 
@@ -148,23 +128,15 @@ func TestRestore_RefusesZipSlipEntry(t *testing.T) {
 	}))
 	defer s3Server.Close()
 
-	var callbackPayload CallbackPayload
-	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = decodeJsonBody(r, &callbackPayload)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer callbackServer.Close()
-
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
-	_ = Restore(context.Background(), volumePath, s3Server.URL, expectedShaHex, callbackServer.URL, "", "")
-
-	if callbackPayload.Success {
-		t.Errorf("expected success=false on zip slip attempt")
+	_, err := streamRestore(context.Background(), volumePath, s3Server.URL, expectedShaHex, "", "")
+	if err == nil {
+		t.Errorf("expected error on zip slip attempt")
 	}
-	if !bytes.Contains([]byte(callbackPayload.ErrorMessage), []byte("escapes volume")) {
-		t.Errorf("expected escapes volume error, got: %s", callbackPayload.ErrorMessage)
+	if !strings.Contains(err.Error(), "escapes volume") {
+		t.Errorf("expected escapes volume error, got: %v", err)
 	}
 }
 
@@ -201,18 +173,13 @@ func TestRestore_EmitsDownloadingProgress(t *testing.T) {
 	}))
 	defer progress.Close()
 
-	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer callback.Close()
-
 	tempDir := t.TempDir()
 	volumePath := filepath.Join(tempDir, "newvolume")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := Restore(ctx, volumePath, presigned.URL, expectedShaHex, callback.URL, progress.URL, "")
+	_, err := streamRestore(ctx, volumePath, presigned.URL, expectedShaHex, progress.URL, "")
 	require.NoError(t, err)
 
 	// progress posts fire in goroutines; give them a beat to land.
@@ -225,7 +192,154 @@ func TestRestore_EmitsDownloadingProgress(t *testing.T) {
 	require.Greater(t, got[len(got)-1].Bytes, int64(0))
 }
 
-// buildArchive builds an in-memory tar.zst from name → content map for tests.
+// tarZstFixture builds a minimal tar.zst archive containing a single file and
+// returns (expectedShaHex, archiveBytes). shared by tests that need a valid
+// archive + matching sha without caring about the contents.
+func tarZstFixture(t *testing.T) (string, []byte) {
+	t.Helper()
+	buf := buildArchive(t, map[string][]byte{"file.txt": []byte("fixture")})
+	raw := buf.Bytes()
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), raw
+}
+
+// containsStr reports whether want appears in ss.
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+type fakeController struct {
+	startErr     error
+	runningAfter int
+	calls        int
+	startedCount int
+}
+
+func (f *fakeController) Start(_ context.Context) error { f.startedCount++; return f.startErr }
+func (f *fakeController) Running() bool {
+	f.calls++
+	return f.calls >= f.runningAfter
+}
+
+func TestRestoreAndBoot_PostsSuccessAfterRunning(t *testing.T) {
+	expectedShaHex, archive := tarZstFixture(t)
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(archive) }))
+	defer s3Server.Close()
+
+	var steps []string
+	progressServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p ProgressPayload
+		_ = decodeJsonBody(r, &p)
+		steps = append(steps, p.Step)
+		w.WriteHeader(204)
+	}))
+	defer progressServer.Close()
+
+	var cb CallbackPayload
+	cbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = decodeJsonBody(r, &cb); w.WriteHeader(200) }))
+	defer cbServer.Close()
+
+	ctrl := &fakeController{runningAfter: 2}
+	err := RestoreAndBoot(context.Background(), ctrl, t.TempDir()+"/vol", s3Server.URL, expectedShaHex, cbServer.URL, progressServer.URL, "")
+	if err != nil {
+		t.Fatalf("RestoreAndBoot returned error: %v", err)
+	}
+	if !cb.Success {
+		t.Fatalf("expected success callback, got error: %s", cb.ErrorMessage)
+	}
+	if ctrl.startedCount != 1 {
+		t.Fatalf("expected one start, got %d", ctrl.startedCount)
+	}
+	if !containsStr(steps, "starting") {
+		t.Fatalf("expected a starting progress tick, got %v", steps)
+	}
+}
+
+func TestRestoreAndBoot_PostsFailureWhenStartErrors(t *testing.T) {
+	expectedShaHex, archive := tarZstFixture(t)
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(archive) }))
+	defer s3Server.Close()
+	var cb CallbackPayload
+	cbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = decodeJsonBody(r, &cb); w.WriteHeader(200) }))
+	defer cbServer.Close()
+
+	ctrl := &fakeController{startErr: errors.New("docker said no")}
+	err := RestoreAndBoot(context.Background(), ctrl, t.TempDir()+"/vol", s3Server.URL, expectedShaHex, cbServer.URL, "", "")
+	if err != nil {
+		t.Fatalf("delivery error: %v", err)
+	}
+	if cb.Success {
+		t.Fatalf("expected failure callback on start error")
+	}
+}
+
+func TestRestoreAndBoot_PostsFailureOnBootTimeout(t *testing.T) {
+	expectedShaHex, archive := tarZstFixture(t)
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(archive) }))
+	defer s3Server.Close()
+	var cb CallbackPayload
+	cbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = decodeJsonBody(r, &cb); w.WriteHeader(200) }))
+	defer cbServer.Close()
+
+	ctrl := &fakeController{runningAfter: 1_000_000}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+
+	err := RestoreAndBoot(ctx, ctrl, t.TempDir()+"/vol", s3Server.URL, expectedShaHex, cbServer.URL, "", "")
+	if err != nil {
+		t.Fatalf("delivery error: %v", err)
+	}
+	if cb.Success {
+		t.Fatalf("expected failure callback on boot timeout")
+	}
+}
+
+func TestPostCallback_RetriesOnTransientFailure(t *testing.T) {
+	old := CallbackRetryBackoff
+	CallbackRetryBackoff = time.Millisecond
+	defer func() { CallbackRetryBackoff = old }()
+
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	if err := postCallback(srv.URL, "", CallbackPayload{Success: true}); err != nil {
+		t.Fatalf("expected eventual success, got %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected a retry, only %d attempt(s)", attempts)
+	}
+}
+
+func TestPostCallback_ReturnsErrorWhenAllAttemptsFail(t *testing.T) {
+	old := CallbackRetryBackoff
+	CallbackRetryBackoff = time.Millisecond
+	defer func() { CallbackRetryBackoff = old }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	if err := postCallback(srv.URL, "", CallbackPayload{Success: true}); err == nil {
+		t.Fatalf("expected an error after exhausting retries")
+	}
+}
+
+// buildArchive builds an in-memory tar.zst from name -> content map for tests.
 func buildArchive(t *testing.T, files map[string][]byte) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer

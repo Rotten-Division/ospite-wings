@@ -75,6 +75,26 @@ const (
 	// ProgressTimeout caps each best-effort progress POST. progress is
 	// non-critical, a slow panel must not stall the restore stream.
 	ProgressTimeout = 5 * time.Second
+
+	// BootTimeout caps how long the orchestrator waits for the restored
+	// server to reach running before giving up and reporting a boot failure.
+	BootTimeout = 2 * time.Minute
+
+	// BootPollInterval is how often the orchestrator checks the running state
+	// while waiting for the boot.
+	BootPollInterval = 1 * time.Second
+)
+
+var (
+	// CallbackMaxAttempts is how many times wings tries to deliver a
+	// completion callback before giving up. the callback is the only signal
+	// the panel gets that a capture or restore finished, so a lost one
+	// strands the server; a few retries cover the transient-loss case.
+	CallbackMaxAttempts = 3
+
+	// CallbackRetryBackoff is the wait between callback delivery attempts.
+	// declared as a var so tests can shrink it without sleeping.
+	CallbackRetryBackoff = 2 * time.Second
 )
 
 // errors returned by capture and restore goroutines, surfaced to the panel

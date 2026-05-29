@@ -122,10 +122,26 @@ func postServerNestRestore(c *gin.Context) {
 	volumePath := s.Filesystem().Path()
 
 	go func(logger *log.Entry) {
-		if err := nest.Restore(context.Background(), volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl, req.ProgressUrl, callbackAuth()); err != nil {
+		ctrl := serverController{s: s}
+		if err := nest.RestoreAndBoot(context.Background(), ctrl, volumePath, req.PresignedUrl, req.ExpectedSha256, req.CallbackUrl, req.ProgressUrl, callbackAuth()); err != nil {
 			logger.WithField("error", errors.WithStackIf(err)).Error("router: nest restore callback delivery failed")
 		}
 	}(logger)
 
 	c.Status(http.StatusAccepted)
+}
+
+// serverController adapts *server.Server to nest.Controller for the restore
+// orchestrator: start via the standard power action, and read running off the
+// environment state the daemon already tracks.
+type serverController struct {
+	s *server.Server
+}
+
+func (c serverController) Start(_ context.Context) error {
+	return c.s.HandlePowerAction(server.PowerActionStart)
+}
+
+func (c serverController) Running() bool {
+	return c.s.Environment.State() == environment.ProcessRunningState
 }

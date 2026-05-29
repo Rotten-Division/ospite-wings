@@ -169,13 +169,28 @@ func encodeVolume(volumePath string, w io.Writer) error {
 	return nil
 }
 
-// postCallback POSTs payload to callbackUrl. callback delivery is best
-// effort, the returned error only describes the http leg.
-// callbackAuth is the {token_id}.{token} pair the panel's DaemonAuthenticate
-// middleware expects as a Bearer credential. wings has no other reason to
-// call back into the panel so we don't share an http client or auth helper
-// with the regular daemon→panel flows that already carry it.
+// postCallback POSTs payload to callbackUrl, retrying up to CallbackMaxAttempts
+// times on failure. the callback is the only signal the panel receives that a
+// capture or restore finished, so a transient network blip or a mid-restart
+// panel must not permanently strand the server.
 func postCallback(callbackUrl, callbackAuth string, payload CallbackPayload) error {
+	var lastErr error
+	for attempt := 1; attempt <= CallbackMaxAttempts; attempt++ {
+		lastErr = postCallbackOnce(callbackUrl, callbackAuth, payload)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt < CallbackMaxAttempts {
+			time.Sleep(CallbackRetryBackoff)
+		}
+	}
+	return lastErr
+}
+
+// postCallbackOnce makes a single POST attempt. callbackAuth is the
+// {token_id}.{token} pair the panel's DaemonAuthenticate middleware expects
+// as a Bearer credential.
+func postCallbackOnce(callbackUrl, callbackAuth string, payload CallbackPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return errors.Wrap(err, "nest: marshal callback")
