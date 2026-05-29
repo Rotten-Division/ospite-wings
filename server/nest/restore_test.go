@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -203,16 +204,6 @@ func tarZstFixture(t *testing.T) (string, []byte) {
 	return hex.EncodeToString(sum[:]), raw
 }
 
-// containsStr reports whether want appears in ss.
-func containsStr(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
 type fakeController struct {
 	startErr     error
 	runningAfter int
@@ -255,7 +246,7 @@ func TestRestoreAndBoot_PostsSuccessAfterRunning(t *testing.T) {
 	if ctrl.startedCount != 1 {
 		t.Fatalf("expected one start, got %d", ctrl.startedCount)
 	}
-	if !containsStr(steps, "starting") {
+	if !slices.Contains(steps, "starting") {
 		t.Fatalf("expected a starting progress tick, got %v", steps)
 	}
 }

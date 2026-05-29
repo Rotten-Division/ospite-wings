@@ -131,9 +131,7 @@ func postServerNestRestore(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// serverController adapts *server.Server to nest.Controller for the restore
-// orchestrator: start via the standard power action, and read running off the
-// environment state the daemon already tracks.
+// serverController adapts *server.Server to nest.Controller for the restore orchestrator.
 type serverController struct {
 	s *server.Server
 }

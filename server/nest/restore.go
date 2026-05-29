@@ -44,9 +44,8 @@ func RestoreAndBoot(ctx context.Context, ctrl Controller, volumePath, presignedU
 		})
 	}
 
-	// the stream is on disk; tell the panel we are booting so the lifecycle
-	// view advances off the streaming stage. best-effort, never blocks.
-	postProgress(progressUrl, callbackAuth, ProgressPayload{Step: "starting"})
+	// best-effort boot signal, fired async so a slow panel can't stall the boot.
+	go postProgress(progressUrl, callbackAuth, ProgressPayload{Step: "starting"})
 
 	if err := ctrl.Start(ctx); err != nil {
 		return postCallback(callbackUrl, callbackAuth, failurePayload(startedAt, fmt.Sprintf("boot failed: %v", err)))
@@ -65,7 +64,8 @@ func RestoreAndBoot(ctx context.Context, ctrl Controller, volumePath, presignedU
 }
 
 func waitForRunning(ctx context.Context, ctrl Controller) error {
-	deadline := time.Now().Add(BootTimeout)
+	ctx, cancel := context.WithTimeout(ctx, BootTimeout)
+	defer cancel()
 	ticker := time.NewTicker(BootPollInterval)
 	defer ticker.Stop()
 	for {
@@ -74,11 +74,8 @@ func waitForRunning(ctx context.Context, ctrl Controller) error {
 		}
 		select {
 		case <-ctx.Done():
-			return errors.New("boot wait cancelled before the server reached running")
+			return fmt.Errorf("server did not reach running before boot timeout: %w", ctx.Err())
 		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return errors.New("server did not reach running within the boot timeout")
-			}
 		}
 	}
 }
